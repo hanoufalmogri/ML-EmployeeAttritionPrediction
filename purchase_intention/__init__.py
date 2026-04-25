@@ -1,0 +1,2 @@
+"""Purchase intention prediction package."""
+
