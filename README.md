@@ -177,6 +177,8 @@ Expected response shape:
 python3 app/gradio_app.py
 ```
 
+The demo includes a purchase probability panel, intent-specific business recommendation, explanation bullets, scenario comparison, and the model's top feature signals.
+
 ## Docker
 Build and run:
 

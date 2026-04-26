@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 import gradio as gr
+import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from purchase_intention.inference import predict_purchase
+from purchase_intention.modeling import FEATURE_IMPORTANCE_PATH
 
 
 # Use common dataset values for technical fields so the demo stays focused on behavior.
@@ -21,19 +24,59 @@ DEFAULT_TECHNICAL_CONTEXT = {
 }
 
 
+def clean_feature_name(feature: str) -> str:
+    return (
+        feature.replace("num__", "")
+        .replace("cat__", "")
+        .replace("_", " ")
+        .replace("ProductRelated", "Product pages")
+        .replace("Administrative", "Account/admin")
+        .replace("Informational", "Info/help")
+    )
+
+
+def load_feature_importance(top_n: int = 8) -> pd.DataFrame:
+    if not FEATURE_IMPORTANCE_PATH.exists():
+        return pd.DataFrame(
+            [{"Signal": "Train the model first", "Relative influence": "Not available"}]
+        )
+
+    importance = pd.read_csv(FEATURE_IMPORTANCE_PATH).head(top_n).copy()
+    importance["Signal"] = importance["feature"].map(clean_feature_name)
+    importance["Relative influence"] = importance["importance"].map(lambda value: f"{value:.1%}")
+    return importance[["Signal", "Relative influence"]]
+
+
+def build_probability_panel(probability: float, intent_level: str) -> str:
+    color = {
+        "High intent": "#15803d",
+        "Medium intent": "#b45309",
+        "Low intent": "#b91c1c",
+    }[intent_level]
+    percentage = probability * 100
+    return f"""
+    <div class="intent-card">
+        <div class="intent-header">
+            <span class="intent-label">{intent_level}</span>
+            <span class="intent-percent">{percentage:.1f}%</span>
+        </div>
+        <div class="intent-track">
+            <div class="intent-fill" style="width: {percentage:.1f}%; background: {color};"></div>
+        </div>
+    </div>
+    """
+
+
 def build_business_summary(probability: float, intent_level: str) -> str:
     if intent_level == "High intent":
         return (
-            f"### {probability:.1%} purchase probability\n"
             "This visitor looks close to converting. Keep the experience smooth and avoid adding friction."
         )
     if intent_level == "Medium intent":
         return (
-            f"### {probability:.1%} purchase probability\n"
             "This session shows meaningful interest, but the user may still need reassurance or a nudge."
         )
     return (
-        f"### {probability:.1%} purchase probability\n"
         "This session currently looks unlikely to convert without a strong change in behavior."
     )
 
@@ -92,7 +135,7 @@ def build_session_explanation(
     return f"### Why the model responded this way\n{bullets}"
 
 
-def run_prediction(
+def build_payload(
     Administrative: int,
     Administrative_Duration: float,
     Informational: int,
@@ -105,8 +148,8 @@ def run_prediction(
     Month: str,
     VisitorType: str,
     Weekend: bool,
-) -> tuple[str, str, str, str]:
-    payload = {
+) -> dict[str, object]:
+    return {
         "Administrative": Administrative,
         "Administrative_Duration": Administrative_Duration,
         "Informational": Informational,
@@ -122,6 +165,66 @@ def run_prediction(
         "Weekend": Weekend,
         **DEFAULT_TECHNICAL_CONTEXT,
     }
+
+
+def build_improvement_payload(payload: dict[str, object]) -> dict[str, object]:
+    improved = payload.copy()
+    improved["ProductRelated"] = min(int(improved["ProductRelated"]) + 12, 100)
+    improved["ProductRelated_Duration"] = min(
+        float(improved["ProductRelated_Duration"]) + 420,
+        5000,
+    )
+    improved["BounceRates"] = max(float(improved["BounceRates"]) * 0.6, 0.0)
+    improved["ExitRates"] = max(float(improved["ExitRates"]) * 0.7, 0.0)
+    improved["PageValues"] = min(float(improved["PageValues"]) + 12, 400)
+    return improved
+
+
+def build_scenario_comparison(payload: dict[str, object], result: dict[str, object]) -> str:
+    improved_payload = build_improvement_payload(payload)
+    improved_result = predict_purchase(improved_payload)
+    current_probability = float(result["purchase_probability"])
+    improved_probability = float(improved_result["purchase_probability"])
+    lift = improved_probability - current_probability
+
+    return (
+        "### Scenario comparison\n"
+        "| Session | Purchase probability | Intent segment |\n"
+        "| --- | ---: | --- |\n"
+        f"| Current behavior | {current_probability:.1%} | {result['intent_level']} |\n"
+        f"| Stronger engagement scenario | {improved_probability:.1%} | {improved_result['intent_level']} |\n\n"
+        f"Estimated lift: **{lift:+.1%}**"
+    )
+
+
+def run_prediction(
+    Administrative: int,
+    Administrative_Duration: float,
+    Informational: int,
+    Informational_Duration: float,
+    ProductRelated: int,
+    ProductRelated_Duration: float,
+    BounceRates: float,
+    ExitRates: float,
+    PageValues: float,
+    Month: str,
+    VisitorType: str,
+    Weekend: bool,
+) -> tuple[str, str, str, str, str, str, pd.DataFrame]:
+    payload = build_payload(
+        Administrative,
+        Administrative_Duration,
+        Informational,
+        Informational_Duration,
+        ProductRelated,
+        ProductRelated_Duration,
+        BounceRates,
+        ExitRates,
+        PageValues,
+        Month,
+        VisitorType,
+        Weekend,
+    )
     result = predict_purchase(payload)
 
     probability = result["purchase_probability"]
@@ -129,6 +232,7 @@ def run_prediction(
     purchase_call = "Likely to purchase" if result["predicted_purchase"] else "Unlikely to purchase"
 
     return (
+        build_probability_panel(probability, intent_level),
         build_business_summary(probability, intent_level),
         f"{purchase_call}\nIntent segment: {intent_level}",
         build_recommendation(intent_level),
@@ -141,7 +245,44 @@ def run_prediction(
             page_values=PageValues,
             weekend=Weekend,
         ),
+        build_scenario_comparison(payload, result),
+        load_feature_importance(),
     )
+
+
+APP_CSS = """
+.intent-card {
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 18px;
+    background: #ffffff;
+}
+.intent-header {
+    align-items: baseline;
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 14px;
+}
+.intent-label {
+    font-size: 18px;
+    font-weight: 700;
+}
+.intent-percent {
+    font-size: 34px;
+    font-weight: 800;
+}
+.intent-track {
+    background: #e5e7eb;
+    border-radius: 999px;
+    height: 14px;
+    overflow: hidden;
+}
+.intent-fill {
+    border-radius: 999px;
+    height: 100%;
+}
+"""
 
 
 with gr.Blocks(title="Purchase Intention Demo") as demo:
@@ -239,10 +380,20 @@ with gr.Blocks(title="Purchase Intention Demo") as demo:
             submit = gr.Button("Analyze Session", variant="primary")
 
         with gr.Column():
+            probability_panel = gr.HTML()
             summary = gr.Markdown()
             decision = gr.Textbox(label="Model Decision", lines=2)
             recommendation = gr.Textbox(label="Business Recommendation", lines=2)
             explanation = gr.Markdown()
+            scenario_comparison = gr.Markdown()
+            feature_importance = gr.Dataframe(
+                value=load_feature_importance(),
+                headers=["Signal", "Relative influence"],
+                datatype=["str", "str"],
+                label="Top Model Signals",
+                interactive=False,
+                wrap=True,
+            )
 
     gr.Examples(
         examples=[
@@ -322,9 +473,17 @@ with gr.Blocks(title="Purchase Intention Demo") as demo:
             visitor_type,
             weekend,
         ],
-        outputs=[summary, decision, recommendation, explanation],
+        outputs=[
+            probability_panel,
+            summary,
+            decision,
+            recommendation,
+            explanation,
+            scenario_comparison,
+            feature_importance,
+        ],
     )
 
 
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(css=APP_CSS, server_port=int(os.getenv("GRADIO_SERVER_PORT", "18060")))
