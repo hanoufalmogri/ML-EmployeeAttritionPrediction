@@ -6,7 +6,7 @@ colorTo: green
 sdk: gradio
 app_file: app.py
 python_version: 3.11
-short_description: Predict online shopping purchase intent with an interactive ML demo.
+short_description: Predict purchase intent with an interactive ML demo.
 ---
 
 # User Behavior Analysis for Purchase Intention Prediction
