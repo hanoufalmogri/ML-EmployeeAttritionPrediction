@@ -22,7 +22,7 @@ from sklearn.metrics import (
 )
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.preprocessing import FunctionTransformer, OneHotEncoder, StandardScaler
 from sklearn.utils.class_weight import compute_sample_weight
 
 
@@ -71,6 +71,11 @@ def _make_one_hot_encoder() -> OneHotEncoder:
         return OneHotEncoder(handle_unknown="ignore", sparse=False)
 
 
+def _normalize_categorical_values(values: Any) -> pd.DataFrame:
+    frame = pd.DataFrame(values).copy()
+    return frame.where(frame.isna(), frame.astype(str))
+
+
 def load_dataset(data_path: str | Path) -> pd.DataFrame:
     df = pd.read_csv(data_path)
     expected = set(FEATURE_COLUMNS + [TARGET_COLUMN])
@@ -90,6 +95,14 @@ def build_preprocessor() -> ColumnTransformer:
     )
     categorical_transformer = Pipeline(
         steps=[
+            (
+                "normalizer",
+                FunctionTransformer(
+                    _normalize_categorical_values,
+                    feature_names_out="one-to-one",
+                    validate=False,
+                ),
+            ),
             ("imputer", SimpleImputer(strategy="most_frequent")),
             ("encoder", _make_one_hot_encoder()),
         ]
